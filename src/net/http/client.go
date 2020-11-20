@@ -54,6 +54,7 @@ import (
 // with the updated values (assuming the origin matches).
 // If Jar is nil, the initial cookies are forwarded without change.
 //
+// http client 客户端
 type Client struct {
 	// Transport specifies the mechanism by which individual
 	// HTTP requests are made.
@@ -113,6 +114,7 @@ var DefaultClient = &Client{}
 //
 // A RoundTripper must be safe for concurrent use by multiple
 // goroutines.
+// 用来表示执行 HTTP 请求的接口，调用方将请求作为参数可以获取请求对应的响应.
 type RoundTripper interface {
 	// RoundTrip executes a single HTTP transaction, returning
 	// a Response for the provided Request.

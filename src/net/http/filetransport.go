@@ -9,6 +9,8 @@ import (
 	"io"
 )
 
+// fileTransport，http2Transport、Transport 实现了 RoundTripper。
+
 // fileTransport implements RoundTripper for the 'file' protocol.
 type fileTransport struct {
 	fh fileHandler

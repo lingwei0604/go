@@ -824,6 +824,7 @@ func validMethod(method string) bool {
 }
 
 // NewRequest wraps NewRequestWithContext using the background context.
+// 根据方法名、URL 和请求体构建请求；
 func NewRequest(method, url string, body io.Reader) (*Request, error) {
 	return NewRequestWithContext(context.Background(), method, url, body)
 }

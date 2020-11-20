@@ -83,6 +83,8 @@ var (
 // RST_STREAM, depending on the HTTP protocol. To abort a handler so
 // the client sees an interrupted response but the server doesn't log
 // an error, panic with the value ErrAbortHandler.
+
+// 主要用于 HTTP 服务器响应客户端的请求
 type Handler interface {
 	ServeHTTP(ResponseWriter, *Request)
 }
@@ -92,6 +94,7 @@ type Handler interface {
 //
 // A ResponseWriter may not be used after the Handler.ServeHTTP method
 // has returned.
+// 提供的三个接口 Header、Write 和 WriteHeader 分别会获取 HTTP 响应、将数据写入负载以及写入响应头.
 type ResponseWriter interface {
 	// Header returns the header map that will be sent by
 	// WriteHeader. The Header map also is the mechanism with which
@@ -1572,6 +1575,7 @@ func (w *response) WriteString(data string) (n int, err error) {
 }
 
 // either dataB or dataS is non-zero.
+
 func (w *response) write(lenData int, dataB []byte, dataS string) (n int, err error) {
 	if w.conn.hijacked() {
 		if lenData > 0 {
@@ -1808,6 +1812,10 @@ func isCommonNetReadError(err error) bool {
 }
 
 // Serve a new connection.
+
+/*
+其中包含读取 HTTP 请求、调用 Handler 处理 HTTP 请求以及调用完成该请求。读取 HTTP 请求会调用 net/http.Conn.readRequest 方法，该方法会从连接中获取 HTTP 请求并构建一个实现了 net/http.ResponseWriter 接口的变量 net/http.response，向该结构体写入的数据都会被转发到它持有的缓冲区中：
+*/
 func (c *conn) serve(ctx context.Context) {
 	c.remoteAddr = c.rwc.RemoteAddr().String()
 	ctx = context.WithValue(ctx, LocalAddrContextKey, c.rwc.LocalAddr())
@@ -2301,6 +2309,11 @@ func stripHostPort(h string) string {
 
 // Find a handler on a handler map given a path string.
 // Most-specific (longest) pattern wins.
+/*
+经过一系列的函数调用，上述过程最终会调用 HTTP 服务器的 net/http.ServerMux.match 方法，该方法会遍历前面注册过的路由表并根据特定规则进行匹配：
+
+如果请求的路径和路由中的表项匹配成功，我们会调用表项中对应的处理器，处理器中包含的业务逻辑会通过 net/http.ResponseWriter 构建 HTTP 请求对应的响应并通过 TCP 连接发送回客户端。
+*/
 func (mux *ServeMux) match(path string) (h Handler, pattern string) {
 	// Check for exact match first.
 	v, ok := mux.m[path]
@@ -2430,6 +2443,8 @@ func (mux *ServeMux) handler(host, path string) (h Handler, pattern string) {
 
 // ServeHTTP dispatches the request to the handler whose
 // pattern most closely matches the request URL.
+// net/http.ServeMux 是一个 HTTP 请求的多路复用器，
+// 它可以接收外部的 HTTP 请求、根据请求的 URL 匹配并调用最合适的处理器：
 func (mux *ServeMux) ServeHTTP(w ResponseWriter, r *Request) {
 	if r.RequestURI == "*" {
 		if r.ProtoAtLeast(1, 1) {
@@ -2444,6 +2459,11 @@ func (mux *ServeMux) ServeHTTP(w ResponseWriter, r *Request) {
 
 // Handle registers the handler for the given pattern.
 // If a handler already exists for pattern, Handle panics.
+
+/*
+路由和对应的处理器会被组成 net/http.DefaultServeMux 会持有一个 net/http.muxEntry 哈希，
+其中存储了从 URL 到处理器的映射关系，HTTP 服务器在处理请求时就会使用该哈希查找处理器。
+*/
 func (mux *ServeMux) Handle(pattern string, handler Handler) {
 	mux.mu.Lock()
 	defer mux.mu.Unlock()
@@ -2488,6 +2508,10 @@ func appendSorted(es []muxEntry, e muxEntry) []muxEntry {
 }
 
 // HandleFunc registers the handler function for the given pattern.
+/*
+	当我们直接调用 net/http.HandleFunc 注册处理器时，标准库会使用默认的 HTTP 服务器 net/http.DefaultServeMux 处理请求，
+	该方法会直接调用 net/http.ServeMux.HandleFunc
+*/
 func (mux *ServeMux) HandleFunc(pattern string, handler func(ResponseWriter, *Request)) {
 	if handler == nil {
 		panic("http: nil handler")
@@ -2889,6 +2913,9 @@ func (sh serverHandler) ServeHTTP(rw ResponseWriter, req *Request) {
 //
 // ListenAndServe always returns a non-nil error. After Shutdown or Close,
 // the returned error is ErrServerClosed.
+/*
+net/http.Server.ListenAndServe 方法会使用网络库提供的 net.Listen 函数监听对应地址上的 TCP 连接并通过 net/http.Server.Serve 处理客户端的请求：
+*/
 func (srv *Server) ListenAndServe() error {
 	if srv.shuttingDown() {
 		return ErrServerClosed
@@ -2942,6 +2969,9 @@ var ErrServerClosed = errors.New("http: Server closed")
 //
 // Serve always returns a non-nil error and closes l.
 // After Shutdown or Close, the returned error is ErrServerClosed.
+/*
+net/http.Server.Serve 会在循环中监听外部的 TCP 连接并为每个连接调用 net/http.Server.newConn 创建新的结构体 net/http.conn，它是 HTTP 连接的服务端表示：
+*/
 func (srv *Server) Serve(l net.Listener) error {
 	if fn := testHookServerServe; fn != nil {
 		fn(srv, l) // call hook with unwrapped listener
@@ -3007,6 +3037,10 @@ func (srv *Server) Serve(l net.Listener) error {
 		go c.serve(connCtx)
 	}
 }
+
+/*
+创建了服务端的连接之后，标准库中的实现会为每个 HTTP 请求创建单独的 Goroutine 并在其中调用 net/http.Conn.serve 方法，如果当前 HTTP 服务接收到了海量的请求，会在内部创建大量的 Goroutine，这可能会使整个服务质量明显降低无法处理请求。
+*/
 
 // ServeTLS accepts incoming connections on the Listener l, creating a
 // new service goroutine for each. The service goroutines perform TLS
@@ -3153,6 +3187,13 @@ func logf(r *Request, format string, args ...interface{}) {
 // The handler is typically nil, in which case the DefaultServeMux is used.
 //
 // ListenAndServe always returns a non-nil error.
+
+/*
+处理请求
+标准库提供的 net/http.ListenAndServe 函数可以用来监听 TCP 连接并处理请求，
+该函数会使用传入的监听地址和处理器初始化一个 HTTP 服务器 net/http.Server，
+调用该服务器的 net/http.Server.ListenAndServe 方法：
+*/
 func ListenAndServe(addr string, handler Handler) error {
 	server := &Server{Addr: addr, Handler: handler}
 	return server.ListenAndServe()

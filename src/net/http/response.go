@@ -151,6 +151,10 @@ func (r *Response) Location() (*url.URL, error) {
 // Clients must call resp.Body.Close when finished reading resp.Body.
 // After that call, clients can inspect resp.Trailer to find key/value
 // pairs included in the response trailer.
+/*
+持久连接中的另一个读循环 net/http.persistConn.readLoop 会负责从 TCP 连接中读取数据并将数据发送会 HTTP 请求的调用方，
+真正负责解析 HTTP 协议的还是 net/http.ReadResponse 方法：
+*/
 func ReadResponse(r *bufio.Reader, req *Request) (*Response, error) {
 	tp := textproto.NewReader(r)
 	resp := &Response{

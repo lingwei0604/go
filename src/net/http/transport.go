@@ -34,11 +34,13 @@ import (
 	"golang.org/x/net/http/httpproxy"
 )
 
+//
 // DefaultTransport is the default implementation of Transport and is
 // used by DefaultClient. It establishes network connections as needed
 // and caches them for reuse by subsequent calls. It uses HTTP proxies
 // as directed by the $HTTP_PROXY and $NO_PROXY (or $http_proxy and
 // $no_proxy) environment variables.
+// http client 的默认值，它的默认值是使用 net/http.DefaultTransport 的 HTTP 客户端；
 var DefaultTransport RoundTripper = &Transport{
 	Proxy: ProxyFromEnvironment,
 	DialContext: (&net.Dialer{
@@ -91,6 +93,13 @@ const DefaultMaxIdleConnsPerHost = 2
 // entry. If the idempotency key value is a zero-length slice, the
 // request is treated as idempotent but the header is not sent on the
 // wire.
+
+/*
+客户端 net/http.Client 是级别较高的抽象，它提供了 HTTP 的一些细节，包括 Cookies 和重定向；
+而 net/http.Transport 结构体会处理 HTTP/HTTPS 协议的底层实现细节，其中会包含连接重用、构建请求以及发送请求等功能。
+*/
+
+// 是 net/http.RoundTripper 接口的实现， 它的主要作用就是支持 HTTP/HTTPS 请求和 HTTP 代理；
 type Transport struct {
 	idleMu       sync.Mutex
 	closeIdle    bool                                // user has requested to close all idle conns
@@ -499,6 +508,14 @@ func (t *Transport) alternateRoundTripper(req *Request) RoundTripper {
 }
 
 // roundTrip implements a RoundTripper over HTTP.
+// 开启 HTTP 事务、获取连接并发送请求；
+/*
+
+net/http.Transport 实现了 net/http.RoundTripper 接口，也是整个请求过程中最重要并且最复杂的结构体，
+该结构体会在 net/http.Transport.roundTrip 方法中发送 HTTP 请求并等待响应，我们可以将该函数的执行过程分成两个部分：
+根据 URL 的协议查找并执行自定义的 net/http.RoundTripper 实现；
+从连接池中获取或者初始化新的持久连接并调用连接的 net/http.persistConn.roundTrip 方法发出请求；
+*/
 func (t *Transport) roundTrip(req *Request) (*Response, error) {
 	t.nextProtoOnce.Do(t.onceSetNextProtoDefaults)
 	ctx := req.Context()
@@ -533,6 +550,7 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 	cancelKey := cancelKey{origReq}
 	req = setupRewindBody(req)
 
+	//替代默认的实现。
 	if altRT := t.alternateRoundTripper(req); altRT != nil {
 		if resp, err := altRT.RoundTrip(req); err != ErrSkipAltProtocol {
 			return resp, err
@@ -556,6 +574,10 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 		return nil, errors.New("http: no Host in request URL")
 	}
 
+	/*
+	在默认情况下我们都会使用 net/http.persistConn 持久连接处理 HTTP 请求，
+	该方法会先获取用于发送请求的连接，随后调用 net/http.persistConn.roundTrip 方法：
+	*/
 	for {
 		select {
 		case <-ctx.Done():
@@ -576,6 +598,9 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 		// host (for http or https), the http proxy, or the http proxy
 		// pre-CONNECTed to https server. In any case, we'll be ready
 		// to send it requests.
+		/*
+		net/http.Transport.getConn 是获取连接的方法，该方法会通过两种方法获取用于发送请求的连接：
+		*/
 		pconn, err := t.getConn(treq, cm)
 		if err != nil {
 			t.setReqCanceler(cancelKey, nil)
@@ -1318,6 +1343,11 @@ func (t *Transport) customDialTLS(ctx context.Context, network, addr string) (co
 // specified in the connectMethod. This includes doing a proxy CONNECT
 // and/or setting up TLS.  If this doesn't return an error, the persistConn
 // is ready to write requests to.
+
+/*
+调用 net/http.Transport.queueForIdleConn 在队列中等待闲置的连接；
+调用 net/http.Transport.queueForDial 在队列中等待建立新的连接；
+*/
 func (t *Transport) getConn(treq *transportRequest, cm connectMethod) (pc *persistConn, err error) {
 	req := treq.Request
 	trace := treq.trace
@@ -1549,7 +1579,12 @@ func (pconn *persistConn) addTLS(ctx context.Context, name string, trace *httptr
 type erringRoundTripper interface {
 	RoundTripErr() error
 }
+/*
+连接是一种相对比较昂贵的资源，如果在每次发出 HTTP 请求之前都建立新的连接，可能会消耗比较多的时间，带来较大的额外开销，
+通过连接池对资源进行分配和复用可以有效地提高 HTTP 请求的整体性能，多数的网络库客户端都会采取类似的策略来复用资源。
 
+当我们调用 net/http.Transport.queueForDial 方法尝试与远程建立连接时，标准库会在内部启动新的 Goroutine 执行 net/http.Transport.dialConnFor 用于建连，从最终调用的 net/http.Transport.dialConn 方法中我们能找到 TCP 连接和 net 库的身影：
+*/
 func (t *Transport) dialConn(ctx context.Context, cm connectMethod) (pconn *persistConn, err error) {
 	pconn = &persistConn{
 		t:             t,
@@ -1742,6 +1777,11 @@ func (t *Transport) dialConn(ctx context.Context, cm connectMethod) (pconn *pers
 	return pconn, nil
 }
 
+/*
+在创建新的 TCP 连接后，我们还会在后台为当前的连接创建两个 Goroutine，分别从 TCP 连接中读取数据或者向 TCP 连接写入数据，
+从建立连接的过程我们就可以发现，如果我们为每一个 HTTP 请求都创建新的连接并启动 Goroutine 处理读写数据，会占用很多的资源。
+*/
+
 // persistConnWriter is the io.Writer written to by pc.bw.
 // It accumulates the number of bytes written to the underlying conn,
 // so the retry logic can determine whether any bytes made it across
@@ -1752,6 +1792,8 @@ type persistConnWriter struct {
 	pc *persistConn
 }
 
+// 当我们调用 net/http.Request.write 方法向请求中写入数据时，实际上就直接写入了 net/http.persistConnWriter 中的 TCP 连接中，
+// TCP 协议栈会负责将 HTTP 请求中的内容发送到目标服务器上：
 func (w persistConnWriter) Write(p []byte) (n int, err error) {
 	n, err = w.pc.conn.Write(p)
 	w.pc.nwrite += int64(n)
@@ -1859,6 +1901,7 @@ func (k connectMethodKey) String() string {
 
 // persistConn wraps a connection, usually a persistent one
 // (but may be used for non-keep-alive requests as well)
+// 封装了一个 TCP 的持久连接，是我们与远程交换消息的句柄（Handle）；
 type persistConn struct {
 	// alt optionally specifies the TLS NextProto RoundTripper.
 	// This is used for HTTP/2 today and future protocols later.
@@ -2374,6 +2417,12 @@ type nothingWrittenError struct {
 	error
 }
 
+// 在 HTTP 持久连接的 net/http.persistConn.writeLoop 方法中等待响应；
+
+/*
+每个 HTTP 请求都是由另一个 Goroutine 中的 net/http.persistConn.writeLoop 循环写入的，这两个 Goroutine 独立执行并通过 Channel 进行通信。
+net/http.Request.write 方法会根据 net/http.Request 结构体中的字段按照 HTTP 协议组成 TCP 数据段：
+*/
 func (pc *persistConn) writeLoop() {
 	defer close(pc.writeLoopDone)
 	for {
@@ -2519,6 +2568,10 @@ var (
 	testHookReadLoopBeforeNextRead             = nop
 )
 
+/*
+等待请求
+持久的 TCP 连接会实现 net/http.persistConn.roundTrip 方法处理写入 HTTP 请求并在 select 语句中等待响应的返回：
+*/
 func (pc *persistConn) roundTrip(req *transportRequest) (resp *Response, err error) {
 	testHookEnterRoundTrip()
 	if !pc.t.replaceReqCanceler(req.cancelKey, pc.cancelRequest) {
